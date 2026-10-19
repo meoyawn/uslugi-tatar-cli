@@ -5,9 +5,12 @@ A Go CLI for submitting gas, electricity and water meter readings to
 
 - `gas`: submit a configured gas meter reading.
 - `main`: submit electricity, hot water and cold water readings for a saved ЖКХ account.
+- `auth import --browser <browser>`: import and verify your browser's portal session.
+- `auth status`: check the imported session against the live portal.
+- `accounts`: discover saved ЖКХ and gas accounts and suggest YAML routing.
 - `--dry-run`: validate the input and compare with the portal without submitting readings.
 
-Requires Go 1.26+ and an authenticated Chrome session for the portal.
+Requires Go 1.26+ and an authenticated browser session for the portal.
 
 ## Install
 
@@ -23,7 +26,63 @@ cd uslugi-tatar-cli
 go build -trimpath .
 ```
 
-## Configure
+## Authenticate
+
+Log in to the portal in your browser, then run:
+
+```console
+uslugi-tatar-cli auth import --browser chrome
+uslugi-tatar-cli auth status
+```
+
+Import uses [SweetCookie](https://github.com/steipete/sweetcookie/) to read a
+snapshot of that browser's local cookie database and decrypt its cookies using
+the OS keychain where necessary. Only cookies matching the portal are imported;
+the browser database is not modified. No password or manual cookie export is
+needed. On macOS, access to Chrome Safe Storage may prompt via Keychain.
+
+Supported browser names: `chrome`, `chromium`, `edge`, `brave`, `vivaldi`, `opera`,
+`arc`, `helium`, `dia`, `comet`, `atlas`, `whale`, `firefox`, `zen`, `floorp`,
+`waterfox`, `librewolf`, `safari`. Availability depends on the OS and installed
+browser. Use `--profile Default` (or a profile directory/database path) on
+`auth import` to select a particular profile.
+
+The CLI verifies the imported session before saving it. Commands then use that
+private session file without reading the browser on every run. Cookies are
+stored as sensitive plaintext with file permissions `0600` in a `0700` directory:
+
+- macOS: `~/Library/Application Support/uslugi-tatar-cli/auth.json`
+- Linux: `${XDG_CONFIG_HOME:-~/.config}/uslugi-tatar-cli/auth.json`
+
+`USLUGI_TATAR_CONFIG_DIR` overrides the dedicated config directory. Keep it
+outside shared repositories. Cookie values are never printed. `auth status`
+checks the live signed-in menu, exits nonzero for missing/expired/revoked
+sessions, and reports request failures without claiming a successful check.
+When a session stops working, log in in the browser and run `auth import` again.
+Failed verification does not overwrite a previously saved session.
+
+## Discover and configure
+
+```console
+uslugi-tatar-cli accounts
+uslugi-tatar-cli accounts --account 0000000001 --yaml
+uslugi-tatar-cli accounts --account 000000000001 --yaml
+```
+
+`accounts` lists saved ЖКХ cards (including cards needing setup) and gas accounts,
+with confirmed account numbers, addresses/apartments, informer UUIDs and gas
+meter serials. `--yaml` prints suggested `uslugi.main` or `uslugi.gas` blocks for
+copying into `meters.yaml`. Without `--account`, candidates are separate YAML
+documents: choose the appropriate account rather than pasting the entire output
+into one meter file. For one apartment, merge its chosen `main` and `gas` entries
+under a single `uslugi` key. Display names are not used to guess which accounts
+belong together. Unconfirmed or unsupported accounts have no generated routing.
+
+Discovery does not submit readings, pay bills, save configuration or change the
+default gas account. Selecting a gas account requires a workflow POST. The output
+contains personal account details; keep it private. Recommendations are routing
+identifiers; add your actual measured readings separately.
+
 
 Copy `meters.example.yaml` to a private `meters.yaml` outside the checkout, or
 use the ignored `meters.yaml` filename locally. All example accounts, addresses,
@@ -57,7 +116,8 @@ saved-account preference.
 
 For `main`, use your 10-digit ЖКХ account, apartment number, expected street/house
 text and the informer UUID. The UUID is the `informer_id` parameter in the saved
-ЖКХ card's `/personal-account/init-by-user-tsj` URL. The CLI checks the account,
+ЖКХ card's `/personal-account/init-by-user-tsj` URL, discovered by `accounts`.
+The CLI checks the account,
 address and apartment before opening its meters. Supported services are:
 
 | YAML field | Portal service |
@@ -79,15 +139,6 @@ uslugi-tatar-cli main --dry-run /path/to/private/meters.yaml
 uslugi-tatar-cli gas /path/to/private/meters.yaml
 uslugi-tatar-cli main /path/to/private/meters.yaml
 ```
-
-`--profile Default` selects a Chrome profile by name or directory when automatic
-discovery does not find the desired session.
-
-Authentication uses [SweetCookie](https://github.com/steipete/sweetcookie/) to
-read the existing Chrome cookies for the portal on every run. The CLI keeps
-cookies in memory and does not print or save their values. No password or cookie
-export is needed. On macOS, reading Chrome Safe Storage may prompt via Keychain.
-Refresh your login in Chrome if the session expires.
 
 ## Validation and submission
 

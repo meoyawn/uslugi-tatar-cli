@@ -6,65 +6,40 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	_ "time/tzdata"
-
-	"github.com/steipete/sweetcookie"
-	"golang.org/x/net/publicsuffix"
 )
 
 const portalURL = "https://uslugi.tatarstan.ru"
 
-func browserSession(ctx context.Context, profile string, out io.Writer) (*http.Client, error) {
-	options := sweetcookie.Options{URL: portalURL + "/gas/", Origins: []string{portalURL + "/personal-account/", portalURL + "/personal_account/"}, Browsers: []sweetcookie.Browser{sweetcookie.BrowserChrome}, Mode: sweetcookie.ModeFirst, Timeout: 15 * time.Second}
-	if profile != "" {
-		options.Profiles = map[sweetcookie.Browser]string{sweetcookie.BrowserChrome: profile}
-	}
-	result, err := sweetcookie.Get(ctx, options)
-	if err != nil {
-		return nil, fmt.Errorf("SweetCookie could not read Chrome session: %w", err)
-	}
-	if len(result.Cookies) == 0 {
-		return nil, fmt.Errorf("SweetCookie found no usable uslugi.tatarstan.ru cookies in Chrome; log in there first or select --profile (browser reported %d warnings)", len(result.Warnings))
-	}
-	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-	if err != nil {
-		return nil, fmt.Errorf("create session jar: %w", err)
-	}
-	origin, _ := url.Parse(portalURL)
-	for _, cookie := range result.Cookies {
-		value := &http.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Secure: cookie.Secure, HttpOnly: cookie.HTTPOnly}
-		if cookie.Expires != nil {
-			value.Expires = *cookie.Expires
-		}
-		jar.SetCookies(origin, []*http.Cookie{value})
-	}
-	fmt.Fprintf(out, "Authentication: SweetCookie imported %d portal cookies from Chrome.\n", len(result.Cookies))
-	return &http.Client{Jar: jar, Timeout: 30 * time.Second}, nil
-}
-
 func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(errOut, "Usage: uslugi-tatar-cli {gas|main} [--dry-run] [--profile Chrome-profile] meters.yaml")
+		fmt.Fprintln(errOut, `Usage:
+  uslugi-tatar-cli auth import --browser <browser> [--profile <profile>]
+  uslugi-tatar-cli auth status
+  uslugi-tatar-cli accounts [--yaml] [--account <number>]
+  uslugi-tatar-cli {gas|main} [--dry-run] meters.yaml`)
 		if len(args) > 0 {
 			return nil
 		}
-		return fmt.Errorf("expected the gas or main command")
+		return fmt.Errorf("expected auth, accounts, gas or main")
+	}
+	if args[0] == "auth" {
+		return runAuth(ctx, args[1:], out, errOut)
+	}
+	if args[0] == "accounts" {
+		return runAccounts(ctx, args[1:], out, errOut)
 	}
 	if args[0] != "gas" && args[0] != "main" {
-		return fmt.Errorf("unknown command %q; expected gas or main", args[0])
+		return fmt.Errorf("unknown command %q; expected auth, accounts, gas or main", args[0])
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	dryRun := flags.Bool("dry-run", false, "show account, meters and usage without submitting readings")
-	profile := flags.String("profile", "", "Chrome profile name or directory (default: SweetCookie discovery)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -86,11 +61,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	httpClient, err := browserSession(ctx, *profile, out)
-	if err != nil {
-		return err
-	}
-	client, err := newPortalClient(portalURL, httpClient)
+	client, err := authenticatedClient()
 	if err != nil {
 		return err
 	}

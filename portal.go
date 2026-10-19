@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,7 +51,7 @@ func newPortalClient(origin string, client *http.Client) (*portalClient, error) 
 
 func (c *portalClient) checkOrigin(target *url.URL) error {
 	if target.Scheme != c.base.Scheme || !strings.EqualFold(target.Host, c.base.Host) || target.User != nil {
-		return fmt.Errorf("portal left its configured origin; refresh the login in Chrome")
+		return fmt.Errorf("portal left its configured origin; refresh authentication with auth import")
 	}
 	return nil
 }
@@ -103,7 +102,7 @@ func (c *portalClient) request(ctx context.Context, target *url.URL, fields url.
 		return page{}, fmt.Errorf("parse portal HTML: %w", err)
 	}
 	if strings.Contains(response.Request.URL.Path, "/auth/") {
-		return page{}, fmt.Errorf("portal session is not authenticated; log in to uslugi.tatarstan.ru in Chrome and rerun")
+		return page{}, errNotAuthenticated
 	}
 	return page{response.Request.URL, doc}, nil
 }
@@ -117,7 +116,7 @@ func (c *portalClient) readForm(p page, inputName, expectedPath string) (form, e
 		}
 	}
 	if len(matches) != 1 {
-		return form{}, fmt.Errorf("portal form field %s: expected one, found %d; refresh Chrome login if expired", inputName, len(matches))
+		return form{}, fmt.Errorf("portal form field %s: expected one, found %d; run auth status to check the session", inputName, len(matches))
 	}
 	var node *html.Node
 	for parent := matches[0].Parent; parent != nil; parent = parent.Parent {
@@ -158,24 +157,18 @@ func (c *portalClient) gasPage(ctx context.Context, routing gasAccount) (page, e
 	if err != nil {
 		return page{}, err
 	}
-	data := find(start.doc, func(n *html.Node) bool { return attr(n, "id") == prefix+"_accounts" })
-	if len(data) != 1 {
-		return page{}, fmt.Errorf("portal saved-account metadata is missing")
+	accounts, err := savedGasAccounts(start)
+	if err != nil {
+		return page{}, err
 	}
-	var accounts map[string]struct {
-		FIO  string `json:"fio"`
-		Mode string `json:"mode"`
+	var account savedGasAccount
+	for _, candidate := range accounts {
+		if candidate.Account == routing.Account {
+			account = candidate
+		}
 	}
-	if err := json.Unmarshal([]byte(attr(data[0], "value")), &accounts); err != nil {
-		return page{}, fmt.Errorf("portal saved-account metadata is invalid")
-	}
-	account, ok := accounts[routing.Account]
-	if !ok || account.FIO == "" || account.Mode == "old" {
-		return page{}, fmt.Errorf("gas account %s is unavailable in this Chrome session's saved accounts", routing.Account)
-	}
-	options := find(accountForm.node, func(n *html.Node) bool { return n.Data == "option" && attr(n, "value") == routing.Account })
-	if len(options) != 1 {
-		return page{}, fmt.Errorf("gas account %s is missing or ambiguous in portal selection", routing.Account)
+	if account.Account == "" || account.FIO == "" || account.Mode == "old" {
+		return page{}, fmt.Errorf("gas account %s is unavailable in this session's saved accounts", routing.Account)
 	}
 	accountForm.fields.Set(prefix+"[account_choices]", routing.Account)
 	accountForm.fields.Set(prefix+"[account_number]", routing.Account)
